@@ -1476,6 +1476,82 @@ async def privacy(interaction: discord.Interaction):
     embed.add_field(name="Data Access & Deletion", value="Your server's data is never shared. You can permanently delete all data for your server at any time by running `/wipe_my_data`.", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+HOW_TO_CHANNEL_NAME = "how-to-use"
+
+
+def build_how_to_embed() -> discord.Embed:
+    """The public-features guide posted in the read-only #how-to-use channel."""
+    embed = discord.Embed(
+        title="📖 How to use the L2 Boss Timer bot",
+        color=discord.Color.green(),
+        description="Track raid boss respawns together. Admins handle setup — every member can use the features below.")
+    embed.add_field(name="🟢 Public boss buttons (easiest)", value=(
+        "In the public timer channel, each boss has a green button. Press it the moment the boss dies to set its "
+        "**Time of Death** to *now* — no special permissions needed.\n"
+        "A 5-minute cooldown prevents accidental double-clicks, and you can press **↩️ Revert** right after if you mis-clicked."
+    ), inline=False)
+    embed.add_field(name="🔔 Automatic window alerts", value=(
+        "The bot posts to the public channel on its own:\n"
+        "• **20 minutes before** a window opens\n"
+        "• **when the window opens** (and when it closes)\n"
+        "• **if a window is missed**, with the next expected window\n"
+        "Nothing to set up — just watch the channel."
+    ), inline=False)
+    embed.add_field(name="⏱️ Recording a Time of Death", value=(
+        "**/tod set** `<boss>` `<when>` — pick a boss, then choose **Now**, **Last 10 minutes**, or **Timestamp** "
+        "(paste a Discord `<t:…>` stamp).\n"
+        "**/tod correction** `<boss>` `<±minutes>` — nudge a window earlier/later (e.g. `+10` or `-15`).\n"
+        "**/tod reset** `<boss>` — clear a boss's timer.\n"
+        "*If your server limits timer changes to a role, you'll need that role for these commands; the public buttons stay open to everyone.*"
+    ), inline=False)
+    embed.add_field(name="📋 Looking things up", value=(
+        "**/overview** — a private snapshot of every boss timer (only you see it).\n"
+        "**/boss list** — all bosses with their respawn and window times.\n"
+        "**/timestamp** `<time>` `[timezone]` — turn any time (e.g. `in 2 hours`, `21:30`) into a Discord timestamp you can paste anywhere.\n"
+        "**/help** — the full command list.\n"
+        "**/privacy** — what data the bot stores."
+    ), inline=False)
+    embed.set_footer(text="Slash commands work anywhere in the server, and the bot's replies to you are private (only you see them).")
+    return embed
+
+
+async def ensure_how_to_channel(guild: Optional[discord.Guild]):
+    """Create (or refresh) a read-only #how-to-use channel holding the public-feature guide.
+    Members can read but not post; the bot and admins can. Safe to call repeatedly — it
+    reuses an existing channel and replaces the bot's previous guide message.
+    Returns (channel, error_code) where error_code is None on success."""
+    if guild is None:
+        return None, "no-guild"
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True, read_message_history=True,
+            send_messages=False, add_reactions=False,
+            create_public_threads=False, create_private_threads=False,
+            send_messages_in_threads=False),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, embed_links=True),
+    }
+    channel = discord.utils.get(guild.text_channels, name=HOW_TO_CHANNEL_NAME)
+    try:
+        if channel is None:
+            channel = await guild.create_text_channel(
+                HOW_TO_CHANNEL_NAME, overwrites=overwrites,
+                topic="How to use the L2 Boss Timer bot — read-only guide.",
+                reason="L2 ToD bot: how-to-use guide channel")
+        else:
+            await channel.edit(overwrites=overwrites, reason="L2 ToD bot: enforce read-only how-to channel")
+        try:
+            await channel.purge(limit=20, check=lambda m: m.author == guild.me)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        await channel.send(embed=build_how_to_embed())
+        return channel, None
+    except discord.Forbidden:
+        return None, "forbidden"
+    except discord.HTTPException as e:
+        return None, "error:%s" % e
+
+
 @bot.tree.command(name="configure", description="Admin Only: Configure the bot for this server.")
 @app_commands.checks.has_permissions(administrator=True)
 async def configure(interaction: discord.Interaction):
@@ -1525,6 +1601,13 @@ async def configure(interaction: discord.Interaction):
         conn.close()
         await dm_channel.send("✅ **Configuration saved!** Posting the live overview now...")
         await post_or_update_overview(interaction.guild_id)
+        howto_channel, howto_err = await ensure_how_to_channel(interaction.guild)
+        if howto_channel:
+            await dm_channel.send(f"📖 Ready: a read-only **#{howto_channel.name}** channel now explains the public features to your members.")
+        elif howto_err == "forbidden":
+            await dm_channel.send("⚠️ I couldn't create the **#how-to-use** channel — I need the **Manage Channels** permission. Grant it and re-run `/configure`.")
+        else:
+            await dm_channel.send(f"⚠️ Could not set up the how-to channel (`{howto_err}`).")
         await dm_channel.send("✅ Done! Check your timer channel for the live overview embed.")
     except Exception as e:
         await dm_channel.send(f"❌ **Error saving configuration!**\n`{e}`")
